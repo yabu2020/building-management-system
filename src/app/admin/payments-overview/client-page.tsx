@@ -45,8 +45,6 @@ import {
   isBefore,
   startOfMonth,
   startOfDay,
-  getYear,
-  getMonth,
   differenceInDays,
 } from "date-fns";
 import {
@@ -71,6 +69,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import XLSX from "xlsx-js-style";
 import { usePermissions } from "@/contexts/PermissionContext";
@@ -233,13 +232,25 @@ export function PaymentsOverviewClientPage({
   const [summaryPeriodMode, setSummaryPeriodMode] = useState<
     "monthly" | "all-time"
   >("monthly");
-  const [summaryMonth, setSummaryMonth] = useState<number>(today.getMonth());
-  const [summaryYear, setSummaryYear] = useState<number>(today.getFullYear());
+  // Custom day-level date range for the top "Summary Period" cards (and the
+  // "All Transactions" table, which now shares this same range) — replaces
+  // the old whole-month-only Month/Year pickers so a specific date range
+  // (not just a full calendar month) can be reported on.
+  const [summaryStartDate, setSummaryStartDate] = useState<string>(
+    format(startOfMonth(today), "yyyy-MM-dd"),
+  );
+  const [summaryEndDate, setSummaryEndDate] = useState<string>(
+    format(endOfMonth(today), "yyyy-MM-dd"),
+  );
 
-  const [startMonth, setStartMonth] = useState<number>(today.getMonth());
-  const [startYear, setStartYear] = useState<number>(today.getFullYear());
-  const [endMonth, setEndMonth] = useState<number>(today.getMonth());
-  const [endYear, setEndYear] = useState<number>(today.getFullYear());
+  // Custom day-level date range for the "Payment History (Paid & Verified)"
+  // table at the bottom.
+  const [paymentStartDate, setPaymentStartDate] = useState<string>(
+    format(startOfMonth(today), "yyyy-MM-dd"),
+  );
+  const [paymentEndDate, setPaymentEndDate] = useState<string>(
+    format(endOfMonth(today), "yyyy-MM-dd"),
+  );
 
   const [bills, setBills] = useState<ClientBill[]>(initialBills);
 
@@ -269,7 +280,11 @@ export function PaymentsOverviewClientPage({
 
   useEffect(() => {
     setPaidCurrentPage(1);
-  }, [startMonth, startYear, endMonth, endYear]);
+  }, [paymentStartDate, paymentEndDate]);
+
+  useEffect(() => {
+    setUpcomingCurrentPage(1);
+  }, [summaryStartDate, summaryEndDate, summaryPeriodMode]);
 
   const calculatePenalty = useCallback(
     (bill: ClientBill, currentStatus: ClientBill["status"]): number => {
@@ -409,24 +424,47 @@ export function PaymentsOverviewClientPage({
     [processedBills],
   );
 
+  // Custom day-level range filter helper (inclusive on both ends).
+  const parseRangeBound = (dateStr: string | null | undefined) =>
+    dateStr ? startOfDay(parseISO(dateStr)) : null;
+
   const paidBillsInSelectedPeriod = useMemo(() => {
-    // compute inclusive start/end dates for the selected month range
-    const rangeStart = startOfDay(new Date(startYear, startMonth, 1));
-    // last day of end month:
-    const rangeEnd = startOfDay(new Date(endYear, endMonth + 1, 0));
+    const rangeStart = parseRangeBound(paymentStartDate);
+    const rangeEnd = parseRangeBound(paymentEndDate);
 
     return processedBills.filter((bill) => {
       if (bill.status !== "Paid" || !bill.paymentDate) return false;
-      const paymentDateObj = parseISO(bill.paymentDate);
-      return paymentDateObj >= rangeStart && paymentDateObj <= rangeEnd;
+      const paymentDateObj = startOfDay(parseISO(bill.paymentDate));
+      if (rangeStart && paymentDateObj < rangeStart) return false;
+      if (rangeEnd && paymentDateObj > rangeEnd) return false;
+      return true;
     });
-  }, [processedBills, startMonth, startYear, endMonth, endYear]);
+  }, [processedBills, paymentStartDate, paymentEndDate]);
 
-  // Pagination for all transactions
+  // The top "Summary Period" range now also drives the "All Transactions"
+  // table below, instead of that table always showing every bill
+  // regardless of the selected period.
+  const summaryBillsForSelectedPeriod = useMemo(() => {
+    if (summaryPeriodMode === "all-time") {
+      return processedBills;
+    }
+
+    const rangeStart = parseRangeBound(summaryStartDate);
+    const rangeEnd = parseRangeBound(summaryEndDate);
+
+    return processedBills.filter((bill) => {
+      const billDate = startOfDay(parseISO(bill.billDate));
+      if (rangeStart && billDate < rangeStart) return false;
+      if (rangeEnd && billDate > rangeEnd) return false;
+      return true;
+    });
+  }, [processedBills, summaryStartDate, summaryEndDate, summaryPeriodMode]);
+
+  // Pagination for all transactions — now respects the Summary Period range.
   const allTransactionsTotalPages = Math.ceil(
-    processedBills.length / upcomingItemsPerPage,
+    summaryBillsForSelectedPeriod.length / upcomingItemsPerPage,
   );
-  const paginatedAllTransactions = processedBills.slice(
+  const paginatedAllTransactions = summaryBillsForSelectedPeriod.slice(
     (upcomingCurrentPage - 1) * upcomingItemsPerPage,
     upcomingCurrentPage * upcomingItemsPerPage,
   );
@@ -440,18 +478,6 @@ export function PaymentsOverviewClientPage({
     paidCurrentPage * paidItemsPerPage,
   );
 
-  const summaryBillsForSelectedPeriod = useMemo(() => {
-    if (summaryPeriodMode === "all-time") {
-      return processedBills;
-    }
-
-    return processedBills.filter((bill) => {
-      const billDate = parseISO(bill.billDate);
-      return (
-        getYear(billDate) === summaryYear && getMonth(billDate) === summaryMonth
-      );
-    });
-  }, [processedBills, summaryMonth, summaryYear, summaryPeriodMode]);
   const unpaidBillsInSummaryPeriod = useMemo(
     () =>
       summaryPeriodMode === "all-time"
@@ -470,20 +496,30 @@ export function PaymentsOverviewClientPage({
           ),
     [processedBills, summaryBillsForSelectedPeriod, summaryPeriodMode],
   );
-  const summaryPeriodLabel = useMemo(
-    () =>
-      summaryPeriodMode === "all-time"
-        ? "All Time"
-        : format(new Date(summaryYear, summaryMonth), "MMMM yyyy"),
-    [summaryMonth, summaryYear, summaryPeriodMode],
-  );
+  const summaryPeriodLabel = useMemo(() => {
+    if (summaryPeriodMode === "all-time") return "All Time";
+    if (!summaryStartDate && !summaryEndDate) return "Selected Period";
+    if (summaryStartDate && summaryEndDate) {
+      if (summaryStartDate === summaryEndDate) {
+        return format(parseISO(summaryStartDate), "MMM d, yyyy");
+      }
+      return `${format(parseISO(summaryStartDate), "MMM d, yyyy")} – ${format(
+        parseISO(summaryEndDate),
+        "MMM d, yyyy",
+      )}`;
+    }
+    return summaryStartDate
+      ? `From ${format(parseISO(summaryStartDate), "MMM d, yyyy")}`
+      : `Through ${format(parseISO(summaryEndDate as string), "MMM d, yyyy")}`;
+  }, [summaryStartDate, summaryEndDate, summaryPeriodMode]);
   const summaryPotentialRevenueAgreements = useMemo(() => {
     if (summaryPeriodMode === "all-time") {
       return [];
     }
 
-    const monthStart = startOfMonth(new Date(summaryYear, summaryMonth, 1));
-    const monthEnd = endOfMonth(monthStart);
+    const rangeStart = parseRangeBound(summaryStartDate);
+    const rangeEnd = parseRangeBound(summaryEndDate);
+    if (!rangeStart || !rangeEnd) return [];
 
     return initialAgreements.filter((agreement) => {
       if (
@@ -504,9 +540,9 @@ export function PaymentsOverviewClientPage({
             ),
       );
 
-      return agreementStart <= monthEnd && agreementEnd >= monthStart;
+      return agreementStart <= rangeEnd && agreementEnd >= rangeStart;
     });
-  }, [initialAgreements, summaryMonth, summaryYear, summaryPeriodMode]);
+  }, [initialAgreements, summaryStartDate, summaryEndDate, summaryPeriodMode]);
   const totalUnpaidForSummaryPeriod = useMemo(
     () =>
       unpaidBillsInSummaryPeriod.reduce(
@@ -542,43 +578,22 @@ export function PaymentsOverviewClientPage({
     );
   }, [initialSpaces, summaryPotentialRevenueAgreements, summaryPeriodMode]);
 
-  const yearsForFilter = useMemo(
-    () => Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i),
-    [],
-  );
-
-  // Compute printable labels and normalize range (ensure start <= end)
-  const computeRange = () => {
-    const start = new Date(startYear, startMonth, 1);
-    const end = new Date(endYear, endMonth, 1);
-    if (start.getTime() > end.getTime()) {
-      // swap
-      return {
-        startLabel: format(end, "MMMM yyyy"),
-        endLabel: format(start, "MMMM yyyy"),
-        startDate: startOfDay(new Date(end.getFullYear(), end.getMonth(), 1)),
-        endDate: startOfDay(
-          new Date(start.getFullYear(), start.getMonth() + 1, 0),
-        ),
-      };
+  // Printable label for the Payment History date range.
+  const rangeLabel = useMemo(() => {
+    if (!paymentStartDate && !paymentEndDate) return "all time";
+    if (paymentStartDate && paymentEndDate) {
+      if (paymentStartDate === paymentEndDate) {
+        return format(parseISO(paymentStartDate), "MMM d, yyyy");
+      }
+      return `${format(parseISO(paymentStartDate), "MMM d, yyyy")} — ${format(
+        parseISO(paymentEndDate),
+        "MMM d, yyyy",
+      )}`;
     }
-    return {
-      startLabel: format(start, "MMMM yyyy"),
-      endLabel: format(end, "MMMM yyyy"),
-      startDate: startOfDay(new Date(start.getFullYear(), start.getMonth(), 1)),
-      endDate: startOfDay(new Date(end.getFullYear(), end.getMonth() + 1, 0)),
-    };
-  };
-  const { startLabel, endLabel } = computeRange();
-  const rangeLabel = `${startLabel} — ${endLabel}`;
-  const monthsForFilter = useMemo(
-    () =>
-      Array.from({ length: 12 }, (_, i) => ({
-        value: i,
-        label: format(new Date(0, i), "MMMM"),
-      })),
-    [],
-  );
+    return paymentStartDate
+      ? `from ${format(parseISO(paymentStartDate), "MMM d, yyyy")}`
+      : `through ${format(parseISO(paymentEndDate as string), "MMM d, yyyy")}`;
+  }, [paymentStartDate, paymentEndDate]);
 
   const getStatusBadgeVariant = (
     status: ClientBill["status"],
@@ -691,7 +706,8 @@ export function PaymentsOverviewClientPage({
             Summary Period
           </CardTitle>
           <CardDescription>
-            Switch between a billing month summary and all-time totals.
+            Switch between a custom date range and all-time totals. This
+            range also controls the "All Transactions" table below.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -708,7 +724,7 @@ export function PaymentsOverviewClientPage({
                   <SelectValue placeholder="Select Summary View" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="monthly">Month and Year</SelectItem>
+                  <SelectItem value="monthly">Custom Date Range</SelectItem>
                   <SelectItem value="all-time">All Time</SelectItem>
                 </SelectContent>
               </Select>
@@ -716,49 +732,24 @@ export function PaymentsOverviewClientPage({
             {summaryPeriodMode === "monthly" ? (
               <>
                 <div>
-                  <Label htmlFor="summary-month-select">Month</Label>
-                  <Select
-                    value={String(summaryMonth)}
-                    onValueChange={(value) => setSummaryMonth(Number(value))}
-                  >
-                    <SelectTrigger
-                      id="summary-month-select"
-                      className="mt-1 h-9"
-                    >
-                      <SelectValue placeholder="Select Month" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {monthsForFilter.map((month) => (
-                        <SelectItem
-                          key={month.value}
-                          value={String(month.value)}
-                        >
-                          {month.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label htmlFor="summary-start-date">From Date</Label>
+                  <Input
+                    id="summary-start-date"
+                    type="date"
+                    className="mt-1 h-9"
+                    value={summaryStartDate}
+                    onChange={(e) => setSummaryStartDate(e.target.value)}
+                  />
                 </div>
                 <div>
-                  <Label htmlFor="summary-year-select">Year</Label>
-                  <Select
-                    value={String(summaryYear)}
-                    onValueChange={(value) => setSummaryYear(Number(value))}
-                  >
-                    <SelectTrigger
-                      id="summary-year-select"
-                      className="mt-1 h-9"
-                    >
-                      <SelectValue placeholder="Select Year" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {yearsForFilter.map((year) => (
-                        <SelectItem key={year} value={String(year)}>
-                          {year}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label htmlFor="summary-end-date">To Date</Label>
+                  <Input
+                    id="summary-end-date"
+                    type="date"
+                    className="mt-1 h-9"
+                    value={summaryEndDate}
+                    onChange={(e) => setSummaryEndDate(e.target.value)}
+                  />
                 </div>
               </>
             ) : null}
@@ -822,26 +813,30 @@ export function PaymentsOverviewClientPage({
       <section className="mb-10">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2">
           <h2 className="text-2xl font-headline font-semibold text-foreground">
-            All Transactions
+            All Transactions ({summaryPeriodLabel})
           </h2>
-          {processedBills.length > 0 && canViewPage && (
+          {summaryBillsForSelectedPeriod.length > 0 && canViewPage && (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => exportToExcel(processedBills, "All_Transactions")}
+              onClick={() =>
+                exportToExcel(summaryBillsForSelectedPeriod, "All_Transactions")
+              }
             >
               <Download className="mr-2 h-4 w-4" /> Export All
             </Button>
           )}
         </div>
-        {processedBills.length === 0 ? (
+        {summaryBillsForSelectedPeriod.length === 0 ? (
           <Card className="text-center py-10 shadow-sm">
             <CardContent>
               <CheckCircle className="mx-auto h-12 w-12 text-green-500 mb-3" />
               <h3 className="text-lg font-semibold font-headline">
                 All Clear!
               </h3>
-              <p className="text-muted-foreground">No transactions found.</p>
+              <p className="text-muted-foreground">
+                No transactions found for {summaryPeriodLabel}.
+              </p>
             </CardContent>
           </Card>
         ) : (
@@ -946,110 +941,33 @@ export function PaymentsOverviewClientPage({
             <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-end">
               <div className="flex-grow sm:flex-grow-0">
                 <Label
-                  htmlFor="start-month-select"
+                  htmlFor="payment-start-date"
                   className="text-xs text-muted-foreground"
                 >
-                  From (Month)
+                  From Date
                 </Label>
-                <Select
-                  value={String(startMonth)}
-                  onValueChange={(value) => setStartMonth(Number(value))}
-                >
-                  <SelectTrigger
-                    id="start-month-select"
-                    className="w-full sm:w-[150px] h-9 mt-1"
-                  >
-                    <SelectValue placeholder="Start Month" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {monthsForFilter.map((month) => (
-                      <SelectItem key={month.value} value={String(month.value)}>
-                        {month.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Input
+                  id="payment-start-date"
+                  type="date"
+                  className="w-full sm:w-[160px] h-9 mt-1"
+                  value={paymentStartDate}
+                  onChange={(e) => setPaymentStartDate(e.target.value)}
+                />
               </div>
               <div className="flex-grow sm:flex-grow-0">
                 <Label
-                  htmlFor="start-year-select"
+                  htmlFor="payment-end-date"
                   className="text-xs text-muted-foreground"
                 >
-                  Year
+                  To Date
                 </Label>
-                <Select
-                  value={String(startYear)}
-                  onValueChange={(value) => setStartYear(Number(value))}
-                >
-                  <SelectTrigger
-                    id="start-year-select"
-                    className="w-full sm:w-[120px] h-9 mt-1"
-                  >
-                    <SelectValue placeholder="Start Year" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {yearsForFilter.map((year) => (
-                      <SelectItem key={year} value={String(year)}>
-                        {year}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-end">
-              <div className="flex-grow sm:flex-grow-0">
-                <Label
-                  htmlFor="end-month-select"
-                  className="text-xs text-muted-foreground"
-                >
-                  To (Month)
-                </Label>
-                <Select
-                  value={String(endMonth)}
-                  onValueChange={(value) => setEndMonth(Number(value))}
-                >
-                  <SelectTrigger
-                    id="end-month-select"
-                    className="w-full sm:w-[150px] h-9 mt-1"
-                  >
-                    <SelectValue placeholder="End Month" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {monthsForFilter.map((month) => (
-                      <SelectItem key={month.value} value={String(month.value)}>
-                        {month.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex-grow sm:flex-grow-0">
-                <Label
-                  htmlFor="end-year-select"
-                  className="text-xs text-muted-foreground"
-                >
-                  Year
-                </Label>
-                <Select
-                  value={String(endYear)}
-                  onValueChange={(value) => setEndYear(Number(value))}
-                >
-                  <SelectTrigger
-                    id="end-year-select"
-                    className="w-full sm:w-[120px] h-9 mt-1"
-                  >
-                    <SelectValue placeholder="End Year" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {yearsForFilter.map((year) => (
-                      <SelectItem key={year} value={String(year)}>
-                        {year}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Input
+                  id="payment-end-date"
+                  type="date"
+                  className="w-full sm:w-[160px] h-9 mt-1"
+                  value={paymentEndDate}
+                  onChange={(e) => setPaymentEndDate(e.target.value)}
+                />
               </div>
             </div>
             {paidBillsInSelectedPeriod.length > 0 && canViewPage && (
@@ -1059,10 +977,7 @@ export function PaymentsOverviewClientPage({
                 onClick={() =>
                   exportToExcel(
                     paidBillsInSelectedPeriod,
-                    `Payment_History_${startLabel.replace(
-                      /\s+/g,
-                      "_",
-                    )}_to_${endLabel.replace(/\s+/g, "_")}`,
+                    `Payment_History_${rangeLabel.replace(/[\s,]+/g, "_")}`,
                   )
                 }
                 className="self-stretch sm:self-end h-9 w-full sm:w-auto"
