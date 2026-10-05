@@ -453,9 +453,21 @@ export function PaymentsOverviewClientPage({
     const rangeEnd = parseRangeBound(summaryEndDate);
 
     return processedBills.filter((bill) => {
-      const billDate = startOfDay(parseISO(bill.billDate));
-      if (rangeStart && billDate < rangeStart) return false;
-      if (rangeEnd && billDate > rangeEnd) return false;
+      // A bill "belongs" to the range by whichever date is actually
+      // meaningful for its current state: a bill that's already been Paid
+      // belongs by its paymentDate (when the money actually came in); a
+      // bill that's still Pending/Overdue belongs by its billDate (when it
+      // was billed/became due), since it has no payment date yet. Without
+      // this, a bill billed in August but paid in September would vanish
+      // from a September report entirely — neither "unpaid in August" nor
+      // "billed in September" would catch it.
+      const relevantDateStr =
+        bill.status === "Paid" && bill.paymentDate
+          ? bill.paymentDate
+          : bill.billDate;
+      const relevantDate = startOfDay(parseISO(relevantDateStr));
+      if (rangeStart && relevantDate < rangeStart) return false;
+      if (rangeEnd && relevantDate > rangeEnd) return false;
       return true;
     });
   }, [processedBills, summaryStartDate, summaryEndDate, summaryPeriodMode]);
@@ -849,7 +861,7 @@ export function PaymentsOverviewClientPage({
                       <TableRow>
                         <TableHead>Tenant</TableHead>
                         <TableHead>Space</TableHead>
-                        <TableHead>Due Date</TableHead>
+                        <TableHead>Due / Paid Date</TableHead>
                         <TableHead className="text-right">Utility</TableHead>
                         <TableHead className="text-right">Penalty</TableHead>
                         <TableHead className="text-right">Amount Due</TableHead>
@@ -883,7 +895,21 @@ export function PaymentsOverviewClientPage({
                                   : ""
                               }
                             >
-                              {format(parseISO(bill.dueDate), "PP")}
+                              {/* A Paid bill is in this list because its
+                                  paymentDate falls in the selected range —
+                                  its original dueDate may be a totally
+                                  different month, so show the date that's
+                                  actually relevant to why it's here. */}
+                              {bill.status === "Paid" && bill.paymentDate ? (
+                                <>
+                                  {format(parseISO(bill.paymentDate), "PP")}
+                                  <span className="block text-[11px] font-normal text-muted-foreground">
+                                    Paid (due {format(parseISO(bill.dueDate), "PP")})
+                                  </span>
+                                </>
+                              ) : (
+                                format(parseISO(bill.dueDate), "PP")
+                              )}
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground text-right whitespace-nowrap">
                               {utilityTotal > 0
