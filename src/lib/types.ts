@@ -278,7 +278,7 @@ export const ALL_RESOURCE_PERMISSIONS: ResourcePermissionGroup[] = [
   },
   {
     resourceId: "district_report",
-    resourceLabel: "District Reports",
+    resourceLabel: "Reports",
     permissions: [{ id: "district_report:view", label: "View" }],
   },
   {

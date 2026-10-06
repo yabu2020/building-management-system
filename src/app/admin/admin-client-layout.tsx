@@ -117,7 +117,7 @@ const allNavItems: NavItem[] = [
   },
   {
     href: "/admin/reports",
-    label: "District Reports",
+    label: "Reports",
     icon: Map,
     permission: "district_report:view",
   },
