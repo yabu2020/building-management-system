@@ -487,8 +487,8 @@ if (startDate && endDate) {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="District & Branch Reports"
-        description="Building-level performance, with District and Branch shown on every row, for management reporting."
+        title="Reports"
+        description="Reports and insights to help you monitor performance and prepare management summaries."
         icon={Map}
         actions={
           <Button
